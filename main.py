@@ -1,13 +1,13 @@
 import telebot
 from telebot import types
-import pymongo
+import json
 import datetime
+import os
 
 # ══════════════════════════════════════════════
 #                  SOZLAMALAR
 # ══════════════════════════════════════════════
 TOKEN          = '8659508590:AAG4yEGt9uE0nc_zW91wcHldtI3kjzefJ-4'
-MONGO_URL      = "mongodb+srv://nurdiyor:CKJ5D40FtZ79IvSd@cluster0.nvjsvlg.mongodb.net/?appName=Cluster0"
 ADMIN_ID       = 8159211308
 CHANNELS       = ["@anibratt"]
 HENTAI_LINK    = "https://t.me/anibratt" 
@@ -16,14 +16,23 @@ HENTAI_LINK    = "https://t.me/anibratt"
 GENRES = ["Action ⚔️", "Romantika ❤️", "Sarguzasht 🗺", "Komediya 😂"]
 
 # ══════════════════════════════════════════════
-#              BAZA VA BOTNI SOZLASH
+#           FAYL-ASOSLI DATABASE (MongoDB o'rniga)
 # ══════════════════════════════════════════════
-client = pymongo.MongoClient(MONGO_URL)
-db = client['anibrat_db']
-anime_col = db['anime']
-users_col = db['users']
-status_col = db['status']
+DATA_FILE = "bot_data.json"
 
+def load_data():
+    """Fayldan ma'lumotlarni yuklash"""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"anime": [], "users": [], "status": []}
+
+def save_data(data):
+    """Ma'lumotlarni faylga saqlash"""
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# Bot sozlamasi
 bot = telebot.TeleBot(TOKEN)
 user_state = {}
 
@@ -31,14 +40,20 @@ user_state = {}
 #              YORDAMCHI FUNKSIYALAR
 # ══════════════════════════════════════════════
 def is_premium(uid):
-    if uid == ADMIN_ID: return True
-    user = status_col.find_one({"user_id": uid, "premium": True})
-    if user:
-        if user.get('expiry') == "forever": return True
-        return user.get('expiry') > datetime.date.today().strftime("%Y-%m-%d")
+    """Premium foydalanuvchini tekshirish"""
+    if uid == ADMIN_ID: 
+        return True
+    
+    data = load_data()
+    for user in data.get('status', []):
+        if user.get('user_id') == uid and user.get('premium'):
+            if user.get('expiry') == "forever":
+                return True
+            return user.get('expiry') > datetime.date.today().strftime("%Y-%m-%d")
     return False
 
 def main_menu(uid):
+    """Asosiy menyu"""
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     m.add("🎬 Anime izlash", "📂 Janrlar")
     m.add("📋 Animelar ro'yxati", "📞 Admin bilan bog'lanish")
@@ -69,8 +84,10 @@ def genre_menu(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("genre_"))
 def show_genre_animes(call):
-    genre = call.data.split("_")[1]
-    animes = list(anime_col.find({"genre": genre}))
+    """Janr bo'yicha animelarni ko'rsatish"""
+    genre = call.data.split("_", 1)[1]
+    data = load_data()
+    animes = [a for a in data['anime'] if a.get('genre') == genre]
     
     if not animes:
         bot.answer_callback_query(call.id, f"{genre} janrida hozircha anime yo'q.")
@@ -107,19 +124,64 @@ def admin_add_step3(message):
 def admin_add_step4(message):
     try:
         name, code = [x.strip() for x in message.text.split('|')]
-        anime_col.insert_one({
+        data = load_data()
+        data['anime'].append({
             "code": code, 
             "name": name, 
             "photo": user_state[message.from_user.id]['photo'], 
             "genre": user_state[message.from_user.id]['genre'],
             "parts": []
         })
+        save_data(data)
         bot.send_message(message.chat.id, f"✅ <b>{name}</b> ({user_state[message.from_user.id]['genre']}) bazaga qo'shildi!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
         del user_state[message.from_user.id]
     except:
         bot.send_message(message.chat.id, "❌ Xato! Format: Nomi | Kod")
 
-# ... (Kodingni qolgan qismlari: start, qism qo'shish, to'lovlar - boyagi kod bilan bir xil qoladi)
+# ══════════════════════════════════════════════
+#              START BUYRUG'I
+# ══════════════════════════════════════════════
+@bot.message_handler(commands=['start'])
+def start(message):
+    """Bot ishga tushgani ko'rsatish"""
+    uid = message.from_user.id
+    data = load_data()
+    
+    # Foydalanuvchini bazaga qo'shish
+    if not any(u.get('user_id') == uid for u in data['users']):
+        data['users'].append({
+            'user_id': uid,
+            'username': message.from_user.username or "Nomatsiz",
+            'joined': datetime.date.today().strftime("%Y-%m-%d")
+        })
+        save_data(data)
+    
+    bot.send_message(uid, f"👋 Salom, <b>{message.from_user.first_name}</b>!\n\n🎬 <b>Anime Bot</b> ga xush kelibsiz!\n\nMenga anime, manga va hentai haqida so'rasiz va men sizga tavsiya qilaman.", 
+                     reply_markup=main_menu(uid), parse_mode="HTML")
 
-bot.infinity_polling()
+# ══════════════════════════════════════════════
+#              STATISTIKA (ADMIN)
+# ══════════════════════════════════════════════
+@bot.message_handler(func=lambda m: m.text == "📊 Statistika" and m.from_user.id == ADMIN_ID)
+def show_stats(message):
+    data = load_data()
+    anime_count = len(data['anime'])
+    user_count = len(data['users'])
+    
+    stats_text = f"""
+📊 <b>BOT STATISTIKASI</b>
 
+🎬 Animelar soni: <b>{anime_count}</b>
+👥 Foydalanuvchilar soni: <b>{user_count}</b>
+📅 Bugun: {datetime.date.today().strftime("%Y-%m-%d")}
+    """
+    
+    bot.send_message(message.chat.id, stats_text, parse_mode="HTML", reply_markup=main_menu(message.from_user.id))
+
+# ══════════════════════════════════════════════
+#              BOT ISHGA TUSHIRISH
+# ══════════════════════════════════════════════
+if __name__ == "__main__":
+    print("✅ Bot ishga tushdi!")
+    print(f"📊 Ma'lumotlar: {len(load_data()['anime'])} anime, {len(load_data()['users'])} foydalanuvchi")
+    bot.infinity_polling()
