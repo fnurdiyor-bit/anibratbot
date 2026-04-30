@@ -1,5 +1,6 @@
-pyTelegramBotAPI
-pymongo
-dnspython
-flask
-
+pyTelegramBotAPI>=4.10.0
+python-dateutil>=2.8.2
+requests>=2.28.0
+pymongo>=4.0.0
+dnspython>=2.3.0
+flask>=2.0.0
